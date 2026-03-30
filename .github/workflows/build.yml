@@ -2,7 +2,7 @@ name: Build DMG
 on: [push]
 jobs:
   build:
-    runs-on: macos-14  # Specifically use macOS 14 (Sonoma)
+    runs-on: macos-14
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -10,25 +10,32 @@ jobs:
       - name: Select Xcode
         run: sudo xcode-select -s /Applications/Xcode_15.4.app/Contents/Developer
 
-      - name: Compile and Bundle App
+      - name: Compile Universal Binary
         run: |
           # 1. Create the App Bundle structure
           mkdir -p MiniDisplay.app/Contents/MacOS
           mkdir -p MiniDisplay.app/Contents/Resources
-          
-          # 2. Move Info.plist to the bundle
           cp Info.plist MiniDisplay.app/Contents/Info.plist
           
-          # 3. Get the SDK path clearly
-          SDK_PATH=$(xcrun --show-sdk-path --sdk macos)
+          # 2. Get the exact SDK path (using macosx instead of macos to avoid folder conflict)
+          SDK_PATH=$(xcrun --sdk macosx --show-sdk-path)
+          echo "SDK Path: $SDK_PATH"
           
-          # 4. Compile the Swift code
-          # We build for both Intel and Apple Silicon (Universal Binary)
+          # 3. Compile for Apple Silicon (M1/M2/M3)
           swiftc -parse-as-library App.swift \
-            -o MiniDisplay.app/Contents/MacOS/MiniDisplay \
+            -o MiniDisplay_arm64 \
             -sdk "$SDK_PATH" \
             -target arm64-apple-macosx11.0
             
+          # 4. Compile for Intel Macs
+          swiftc -parse-as-library App.swift \
+            -o MiniDisplay_x86 \
+            -sdk "$SDK_PATH" \
+            -target x86_64-apple-macosx11.0
+            
+          # 5. Combine into a Universal Binary
+          lipo -create MiniDisplay_arm64 MiniDisplay_x86 -output MiniDisplay.app/Contents/MacOS/MiniDisplay
+          
       - name: Create DMG
         run: |
           mkdir dist
@@ -38,5 +45,5 @@ jobs:
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: MiniDisplay-Installer
+          name: MiniDisplay-Universal-Installer
           path: MiniDisplay.app.dmg
