@@ -19,47 +19,48 @@ struct DDC {
     // MARK: - DDC packet sender
 
     private static func sendDDC(service: io_service_t, vcp: UInt8, value: UInt16) {
-        // MCCS Set VCP Feature (0x03), 4 data bytes, XOR checksum
         let valueHigh = UInt8((value >> 8) & 0xFF)
         let valueLow  = UInt8(value & 0xFF)
-        // Packet bytes sent after the I2C address (0x6E = 0x37 << 1)
         var payload: [UInt8] = [0x51, 0x84, 0x03, vcp, valueHigh, valueLow, 0x00]
         payload[6] = payload.dropLast().reduce(UInt8(0x6E), ^)
 
-        withUnsafeMutableBytes(of: &payload) { ptr in
-            var request = IOI2CRequest()
-            bzero(&request, MemoryLayout<IOI2CRequest>.size)
-            request.commFlags             = 0
-            request.sendAddress           = 0x6E
-            request.sendTransactionType   = IOOptionBits(kIOI2CSimpleTransactionType)
-            request.sendBuffer            = UInt(bitPattern: ptr.baseAddress)
-            request.sendBytes             = UInt32(payload.count)
-            request.replyTransactionType  = IOOptionBits(kIOI2CNoTransactionType)
-            request.replyBytes            = 0
-            request.minReplyDelay         = 0
+        var busCount: IOItemCount = 0
+        guard IOFBGetI2CInterfaceCount(service, &busCount) == KERN_SUCCESS, busCount > 0 else {
+            print("DDC: no I2C buses on service")
+            return
+        }
 
-            var busCount: IOItemCount = 0
-            guard IOFBGetI2CInterfaceCount(service, &busCount) == KERN_SUCCESS,
-                  busCount > 0 else { return }
+        for bus in 0..<busCount {
+            // IOFBCopyI2CInterfaceForBus returns an IOI2CConnectRef (OpaquePointer)
+            var connectRef: IOI2CConnectRef?
+            guard IOFBCopyI2CInterfaceForBus(service, bus, &connectRef) == KERN_SUCCESS,
+                  let connect = connectRef else { continue }
 
-            for bus in 0..<busCount {
-                var connect: io_connect_t = 0
-                guard IOFBCopyI2CInterfaceForBus(service, bus, &connect) == KERN_SUCCESS else { continue }
+            payload.withUnsafeMutableBytes { ptr in
+                var request = IOI2CRequest()
+                bzero(&request, MemoryLayout<IOI2CRequest>.size)
+                request.commFlags            = 0
+                request.sendAddress          = 0x6E
+                request.sendTransactionType  = IOOptionBits(kIOI2CSimpleTransactionType)
+                request.sendBuffer           = UInt(bitPattern: ptr.baseAddress)
+                request.sendBytes            = UInt32(payload.count)
+                request.replyTransactionType = IOOptionBits(kIOI2CNoTransactionType)
+                request.replyBytes           = 0
+                request.minReplyDelay        = 0
+
                 _ = IOI2CSendRequest(connect, 0, &request)
-                IOServiceClose(connect)
             }
+
+            IOI2CInterfaceClose(connect, 0)
         }
     }
 
-    // MARK: - Resolve CGDirectDisplayID -> io_service_t (IOFramebuffer)
+    // MARK: - Resolve CGDirectDisplayID -> IOFramebuffer io_service_t
 
     private static func serviceForDisplay(_ displayID: CGDirectDisplayID) -> io_service_t? {
-        let vendor  = CGDisplayVendorNumber(displayID)
-        let model   = CGDisplayModelNumber(displayID)
-        let serial  = CGDisplaySerialNumber(displayID)
-
-        let matching = IOServiceMatching("IOFramebuffer")
-        var iterator: io_iterator_t = 0
+        let vendor = CGDisplayVendorNumber(displayID)
+        let model  = CGDisplayModelNumber(displayID)
+        let serial = CGDisplaySerialNumber(displayID)
 
         let port: mach_port_t
         if #available(macOS 12.0, *) {
@@ -68,6 +69,8 @@ struct DDC {
             port = kIOMasterPortDefault
         }
 
+        let matching = IOServiceMatching("IOFramebuffer")
+        var iterator: io_iterator_t = 0
         guard IOServiceGetMatchingServices(port, matching, &iterator) == KERN_SUCCESS else {
             return nil
         }
@@ -80,7 +83,7 @@ struct DDC {
             let s = registryUInt32(service, key: "DisplaySerialNumber")
 
             if v == vendor && m == model && (s == serial || s == 0) {
-                return service  // caller must IOObjectRelease
+                return service  // caller releases via defer
             }
             IOObjectRelease(service)
             service = IOIteratorNext(iterator)
