@@ -14,32 +14,39 @@ jobs:
         run: |
           mkdir -p MiniDisplay.app/Contents/MacOS
           cp Info.plist MiniDisplay.app/Contents/Info.plist
-          
+
           SDK_PATH=$(xcrun --sdk macosx --show-sdk-path)
-          
-          # Compile
+
+          # Compile for Apple Silicon (M1/M2/M3/M4)
           swiftc -parse-as-library App.swift \
-            -o MiniDisplay.app/Contents/MacOS/MiniDisplay \
+            -o MiniDisplay_arm64 \
             -sdk "$SDK_PATH" \
             -target arm64-apple-macosx11.0 \
             -framework SwiftUI \
             -framework AppKit \
-            -framework IOKit \
-            -F /System/Library/PrivateFrameworks \
-            -framework DisplayServices
-          
-          # --- ADDED SIGNING STEP ---
-          # This ad-hoc signs the app so Apple Silicon doesn't think it's damaged
-          codesign --force --deep --sign - MiniDisplay.app
-            
+            -framework IOKit
+
+          # Compile for Intel
+          swiftc -parse-as-library App.swift \
+            -o MiniDisplay_x86 \
+            -sdk "$SDK_PATH" \
+            -target x86_64-apple-macosx11.0 \
+            -framework SwiftUI \
+            -framework AppKit \
+            -framework IOKit
+
+          # Merge into Universal Binary
+          lipo -create MiniDisplay_arm64 MiniDisplay_x86 \
+            -output MiniDisplay.app/Contents/MacOS/MiniDisplay
+
       - name: Create DMG
         run: |
           mkdir dist
           cp -r MiniDisplay.app dist/
           hdiutil create -volname "MiniDisplay" -srcfolder dist -ov -format UDZO MiniDisplay.app.dmg
-          
+
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: MiniDisplay-M4-Installer
+          name: MiniDisplay-Installer
           path: MiniDisplay.app.dmg
