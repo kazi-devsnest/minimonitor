@@ -4,20 +4,33 @@ jobs:
   build:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v3
-      - name: Compile App
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Compile and Bundle App
         run: |
+          # 1. Create the App Bundle structure
           mkdir -p MiniDisplay.app/Contents/MacOS
           mkdir -p MiniDisplay.app/Contents/Resources
+          
+          # 2. Move Info.plist to the bundle
           cp Info.plist MiniDisplay.app/Contents/Info.plist
-          swiftc App.swift -o MiniDisplay.app/Contents/MacOS/MiniDisplay -sdk $(xcrun --show-sdk-path --sdk macos)
+          
+          # 3. Compile the Swift code
+          # We use -parse-as-library because we are using @main
+          swiftc -parse-as-library App.swift \
+            -o MiniDisplay.app/Contents/MacOS/MiniDisplay \
+            -sdk $(xcrun --show-sdk-path --sdk macos) \
+            -target x86_64-apple-macosx11.0 # Ensures compatibility
+            
       - name: Create DMG
         run: |
           mkdir dist
           cp -r MiniDisplay.app dist/
           hdiutil create -volname "MiniDisplay" -srcfolder dist -ov -format UDZO MiniDisplay.app.dmg
+          
       - name: Upload Artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
-          name: MiniDisplay-DMG
+          name: MiniDisplay-Installer
           path: MiniDisplay.app.dmg
