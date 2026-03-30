@@ -1,9 +1,9 @@
 import SwiftUI
 import AppKit
+import IOKit
 
-// --- APPLE SILICON (M1/M2/M3/M4) HARDWARE LOGIC ---
-
-// Linking to the private IOAVService functions
+// --- APPLE SILICON PRIVATE API BRIDGE ---
+// These functions exist in the macOS Private Frameworks
 @_silgen_name("IOAVServiceCreateWithService")
 func IOAVServiceCreateWithService(_ allocator: CFAllocator?, _ service: io_service_t) -> Unmanaged<AnyObject>?
 
@@ -11,27 +11,27 @@ func IOAVServiceCreateWithService(_ allocator: CFAllocator?, _ service: io_servi
 func IOAVServiceWriteI2C(_ service: AnyObject, _ chipAddress: UInt32, _ dataAddress: UInt32, _ pointer: UnsafePointer<UInt8>, _ length: UInt32) -> Int32
 
 struct DDC {
-    static func setVCP(vcp: UInt8, value: UInt8) {
+    static func setVCP(displayID: CGDirectDisplayID, vcp: UInt8, value: UInt8) {
         var iter: io_iterator_t = 0
-        // On M-series, DDC is handled by 'dc-pa-v-service'
-        let matching = IOServiceMatching("dc-pa-v-service")
+        // Search for all possible Display Services on Apple Silicon
+        let matching = IOServiceMatching("IOAVService")
         
         guard IOServiceGetMatchingServices(kIOMasterPortDefault, matching, &iter) == kIOReturnSuccess else {
-            print("Could not find Apple Silicon Display Services")
             return
         }
         
         defer { IOObjectRelease(iter) }
         
         while case let service = IOIteratorNext(iter), service != 0 {
-            // Create the AVService for this specific monitor port
+            // Check if this service is the one for our specific display
+            // On Mac Mini, we usually send to all external services
             if let avService = IOAVServiceCreateWithService(kCFAllocatorDefault, service)?.takeRetainedValue() {
                 
-                // Construct DDC Packet: [Destination, Length, Command, VCP, Value, Checksum]
+                // DDC Packet
                 var data = [UInt8](repeating: 0, count: 6)
-                data[0] = 0x51
-                data[1] = 0x82
-                data[2] = 0x03
+                data[0] = 0x51 // Dest
+                data[1] = 0x82 // Length (0x80 + 2 bytes)
+                data[2] = 0x03 // Set Command
                 data[3] = vcp
                 data[4] = value
                 
@@ -39,68 +39,68 @@ struct DDC {
                 for i in 0..<5 { checksum ^= data[i] }
                 data[5] = checksum
                 
-                // On Apple Silicon, we write to I2C address 0x37 (0x6E >> 1)
-                let result = IOAVServiceWriteI2C(avService, 0x37, 0x51, data, UInt32(data.count))
-                
-                if result == 0 {
-                    print("Successfully changed hardware value on M4 via IOAV")
-                }
+                // Address 0x37 is the standard I2C for DDC
+                _ = IOAVServiceWriteI2C(avService, 0x37, 0x51, data, UInt32(data.count))
             }
             IOObjectRelease(service)
         }
     }
 }
 
-// --- UI VIEW ---
+// --- UI ---
 struct MonitorView: View {
+    var id: CGDirectDisplayID
     var name: String
     @State private var brightness: Double = 50
     @State private var contrast: Double = 50
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(name).font(.system(size: 11, weight: .bold))
+        VStack(alignment: .leading, spacing: 5) {
+            Text(name).font(.system(size: 11, weight: .bold)).foregroundColor(.blue)
             
-            HStack {
-                Image(systemName: "sun.max.fill").frame(width: 20)
-                Slider(value: $brightness, in: 0...100) { editing in
-                    if !editing {
-                        DDC.setVCP(vcp: 0x10, value: UInt8(brightness))
+            VStack {
+                HStack {
+                    Image(systemName: "sun.max.fill").font(.system(size: 10))
+                    Slider(value: $brightness, in: 0...100) { editing in
+                        if !editing { DDC.setVCP(displayID: id, vcp: 0x10, value: UInt8(brightness)) }
+                    }
+                }
+                HStack {
+                    Image(systemName: "circle.lefthalf.filled").font(.system(size: 10))
+                    Slider(value: $contrast, in: 0...100) { editing in
+                        if !editing { DDC.setVCP(displayID: id, vcp: 0x12, value: UInt8(contrast)) }
                     }
                 }
             }
-            
-            HStack {
-                Image(systemName: "circle.lefthalf.filled").frame(width: 20)
-                Slider(value: $contrast, in: 0...100) { editing in
-                    if !editing {
-                        DDC.setVCP(vcp: 0x12, value: UInt8(contrast))
-                    }
-                }
-            }
-            Divider().padding(.vertical, 4)
+            Divider().padding(.vertical, 5)
         }
     }
 }
 
 struct MainView: View {
+    // Detect all screens
+    let screens = NSScreen.screens
+
     var body: some View {
-        VStack(spacing: 12) {
-            Text("MiniDisplay (M4 Mode)").font(.caption).opacity(0.6)
+        VStack(spacing: 10) {
+            Text("MiniDisplay M4").font(.caption).bold()
             
-            // On Apple Silicon, iterating NSScreen is fine for the UI, 
-            // but the DDC command above will loop through all external ports.
-            ForEach(NSScreen.screens, id: \.self) { screen in
-                if screen != NSScreen.screens.first { // Usually skips the built-in MacBook screen
-                    MonitorView(name: screen.localizedName)
+            ScrollView {
+                VStack {
+                    ForEach(screens, id: \.self) { screen in
+                        let displayID = screen.deviceDescription[NSDeviceDescriptionKey(rawValue: "NSScreenNumber")] as? CGDirectDisplayID ?? 0
+                        // Only show external monitors (skip built-in if it were a laptop)
+                        MonitorView(id: displayID, name: screen.localizedName)
+                    }
                 }
             }
-            
+            .frame(maxHeight: 300)
+
             Button("Quit") { NSApplication.shared.terminate(nil) }
-                .buttonStyle(.bordered).controlSize(.small)
+                .controlSize(.small)
         }
         .padding()
-        .frame(width: 220)
+        .frame(width: 250)
     }
 }
 
