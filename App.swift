@@ -1,17 +1,40 @@
 import SwiftUI
 import AppKit
+import IOKit
 import IOKit.i2c
 
 // --- REAL HARDWARE COMMUNICATION LOGIC ---
 struct DDC {
+    static func setBrightness(displayID: CGDirectDisplayID, value: UInt8) {
+        if CGDisplayIsBuiltin(displayID) != 0 {
+            let service = CGDisplayIOServicePort(displayID)
+            guard service != 0 else {
+                print("Builtin display service not found for ID: \(displayID)")
+                return
+            }
+
+            let normalized = Float(value) / 100.0
+            let result = IODisplaySetFloatParameter(service, 0, kIODisplayBrightnessKey as CFString, normalized)
+            if result != kIOReturnSuccess {
+                print("Failed to set builtin brightness (IODisplaySetFloatParameter): \(result)")
+            } else {
+                print("Builtin brightness set to \(value)%")
+            }
+            IOObjectRelease(service)
+            return
+        }
+
+        setVCP(displayID: displayID, vcp: 0x10, value: value)
+    }
+
     static func setVCP(displayID: CGDirectDisplayID, vcp: UInt8, value: UInt8) {
         // 1. Find the Framebuffer service for this display
         let service = IOFramebufferPortFromDisplayID(displayID)
-        guard service != 0 else { 
+        guard service != 0 else {
             print("Could not find framebuffer for ID: \(displayID)")
-            return 
+            return
         }
-        
+
         // 2. Prepare the DDC Packet
         var data = [UInt8](repeating: 0, count: 7)
         data[0] = 0x51
@@ -19,7 +42,7 @@ struct DDC {
         data[2] = 0x03
         data[3] = vcp
         data[4] = value
-        
+
         var checksum: UInt8 = 0x6E
         for i in 0..<5 {
             checksum ^= data[i]
@@ -30,29 +53,29 @@ struct DDC {
         var request = IOI2CRequest()
         let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: 6)
         for i in 0..<6 { buffer[i] = data[i] }
-        
+
         request.commFlags = 0
         request.sendAddress = 0x6E
         request.sendTransactionType = IOOptionBits(kIOI2CSimpleTransactionType)
         request.sendBuffer = vm_address_t(bitPattern: buffer)
         request.sendBytes = 6
-        
+
         request.replyAddress = 0x6F
         request.replyTransactionType = IOOptionBits(kIOI2CNoTransactionType)
         request.replyBuffer = 0
         request.replyBytes = 0
-        
+
         // 4. Send Request (Fixed casting for Swift compatibility)
         // We cast the service (UInt32) to the expected OpaquePointer (IOI2CConnectRef)
         let connect = unsafeBitCast(service, to: IOI2CConnectRef.self)
         let result = IOI2CSendRequest(connect, 0, &request)
-        
+
         if result != kIOReturnSuccess {
             print("DDC hardware communication failed error: \(result)")
         } else {
             print("Successfully sent VCP \(vcp) value \(value)")
         }
-        
+
         buffer.deallocate()
         IOObjectRelease(service)
     }
@@ -90,7 +113,7 @@ struct MonitorView: View {
                 Image(systemName: "sun.max.fill").frame(width: 20)
                 Slider(value: $brightness, in: 0...100) { editing in
                     if !editing {
-                        DDC.setVCP(displayID: displayID, vcp: 0x10, value: UInt8(brightness))
+                        DDC.setBrightness(displayID: displayID, value: UInt8(brightness))
                     }
                 }
             }
