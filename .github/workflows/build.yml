@@ -2,10 +2,13 @@ name: Build DMG
 on: [push]
 jobs:
   build:
-    runs-on: macos-latest
+    runs-on: macos-14  # Specifically use macOS 14 (Sonoma)
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_15.4.app/Contents/Developer
 
       - name: Compile and Bundle App
         run: |
@@ -16,12 +19,15 @@ jobs:
           # 2. Move Info.plist to the bundle
           cp Info.plist MiniDisplay.app/Contents/Info.plist
           
-          # 3. Compile the Swift code
-          # We use -parse-as-library because we are using @main
+          # 3. Get the SDK path clearly
+          SDK_PATH=$(xcrun --show-sdk-path --sdk macos)
+          
+          # 4. Compile the Swift code
+          # We build for both Intel and Apple Silicon (Universal Binary)
           swiftc -parse-as-library App.swift \
             -o MiniDisplay.app/Contents/MacOS/MiniDisplay \
-            -sdk $(xcrun --show-sdk-path --sdk macos) \
-            -target x86_64-apple-macosx11.0 # Ensures compatibility
+            -sdk "$SDK_PATH" \
+            -target arm64-apple-macosx11.0
             
       - name: Create DMG
         run: |
