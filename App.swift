@@ -11,38 +11,34 @@ func IOAVServiceCreateWithService(_ allocator: CFAllocator?, _ service: io_servi
 func IOAVServiceWriteI2C(_ service: AnyObject, _ chipAddress: UInt32, _ dataAddress: UInt32, _ pointer: UnsafePointer<UInt8>, _ length: UInt32) -> Int32
 
 struct DDC {
-    static func setVCP(displayID: CGDirectDisplayID, vcp: UInt8, value: UInt8) {
-        var iter: io_iterator_t = 0
-        // Search for all possible Display Services on Apple Silicon
-        let matching = IOServiceMatching("IOAVService")
+    static func setVCP(vcp: UInt8, value: UInt8) {
+        let serviceNames = ["IOAVService", "dc-pa-v-service", "AppleCLCD2"]
         
-        guard IOServiceGetMatchingServices(kIOMasterPortDefault, matching, &iter) == kIOReturnSuccess else {
-            return
-        }
-        
-        defer { IOObjectRelease(iter) }
-        
-        while case let service = IOIteratorNext(iter), service != 0 {
-            // Check if this service is the one for our specific display
-            // On Mac Mini, we usually send to all external services
-            if let avService = IOAVServiceCreateWithService(kCFAllocatorDefault, service)?.takeRetainedValue() {
-                
-                // DDC Packet
-                var data = [UInt8](repeating: 0, count: 6)
-                data[0] = 0x51 // Dest
-                data[1] = 0x82 // Length (0x80 + 2 bytes)
-                data[2] = 0x03 // Set Command
-                data[3] = vcp
-                data[4] = value
-                
-                var checksum: UInt8 = 0x6E
-                for i in 0..<5 { checksum ^= data[i] }
-                data[5] = checksum
-                
-                // Address 0x37 is the standard I2C for DDC
-                _ = IOAVServiceWriteI2C(avService, 0x37, 0x51, data, UInt32(data.count))
+        for name in serviceNames {
+            var iter: io_iterator_t = 0
+            let matching = IOServiceMatching(name)
+            guard IOServiceGetMatchingServices(kIOMasterPortDefault, matching, &iter) == kIOReturnSuccess else { continue }
+            
+            while case let service = IOIteratorNext(iter), service != 0 {
+                if let avService = IOAVServiceCreateWithService(kCFAllocatorDefault, service)?.takeRetainedValue() {
+                    var data = [UInt8](repeating: 0, count: 6)
+                    data[0] = 0x51
+                    data[1] = 0x82
+                    data[2] = 0x03
+                    data[3] = vcp
+                    data[4] = value
+                    
+                    var checksum: UInt8 = 0x6E
+                    for i in 0..<5 { checksum ^= data[i] }
+                    data[5] = checksum
+                    
+                    // Try writing to the I2C bus
+                    let result = IOAVServiceWriteI2C(avService, 0x37, 0x51, data, UInt32(data.count))
+                    print("Service \(name) attempt result: \(result)")
+                }
+                IOObjectRelease(service)
             }
-            IOObjectRelease(service)
+            IOObjectRelease(iter)
         }
     }
 }

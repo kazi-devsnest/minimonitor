@@ -17,7 +17,7 @@ jobs:
           
           SDK_PATH=$(xcrun --sdk macosx --show-sdk-path)
           
-          # We link IOKit and the private DisplayServices framework
+          # Compile
           swiftc -parse-as-library App.swift \
             -o MiniDisplay.app/Contents/MacOS/MiniDisplay \
             -sdk "$SDK_PATH" \
@@ -27,6 +27,10 @@ jobs:
             -framework IOKit \
             -F /System/Library/PrivateFrameworks \
             -framework DisplayServices
+          
+          # --- ADDED SIGNING STEP ---
+          # This ad-hoc signs the app so Apple Silicon doesn't think it's damaged
+          codesign --force --deep --sign - MiniDisplay.app
             
       - name: Create DMG
         run: |
