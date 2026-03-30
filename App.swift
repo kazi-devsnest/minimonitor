@@ -3,84 +3,84 @@ import AppKit
 import IOKit
 import IOKit.i2c
 
-// MARK: - DDC/CI over IOKit (works on Apple Silicon + Intel)
+// MARK: - DDC/CI over IOKit (Apple Silicon + Intel, macOS 11+)
 
 struct DDC {
 
-    // Send a DDC Set VCP command to a display identified by CGDirectDisplayID
     static func setVCP(displayID: CGDirectDisplayID, vcp: UInt8, value: UInt16) {
-        guard let service = IOServicePortFromCGDisplayID(displayID) else {
-            print("DDC: Could not find IOService for display \(displayID)")
+        guard let service = serviceForDisplay(displayID) else {
+            print("DDC: no IOService for display \(displayID)")
             return
         }
         defer { IOObjectRelease(service) }
+        sendDDC(service: service, vcp: vcp, value: value)
+    }
 
-        // Build DDC Set VCP Feature request (MCCS spec)
-        // Packet: 0x51 (source), length, 0x03 (Set VCP), vcp code, value high, value low, checksum
-        let length: UInt8 = 0x84          // 0x80 | 4 bytes of data
+    // MARK: - DDC packet sender
+
+    private static func sendDDC(service: io_service_t, vcp: UInt8, value: UInt16) {
+        // MCCS Set VCP Feature (0x03), 4 data bytes, XOR checksum
         let valueHigh = UInt8((value >> 8) & 0xFF)
         let valueLow  = UInt8(value & 0xFF)
-        var packet: [UInt8] = [0x51, length, 0x03, vcp, valueHigh, valueLow, 0x00]
-        // XOR checksum over all bytes including the I2C destination address byte (0x6E)
-        packet[6] = packet.dropLast().reduce(0x6E, ^)
+        // Packet bytes sent after the I2C address (0x6E = 0x37 << 1)
+        var payload: [UInt8] = [0x51, 0x84, 0x03, vcp, valueHigh, valueLow, 0x00]
+        payload[6] = payload.dropLast().reduce(UInt8(0x6E), ^)
 
-        var request = IOI2CRequest()
-        request.commFlags          = 0
-        request.sendAddress        = 0x6E          // DDC/CI address (0x37 << 1)
-        request.sendTransactionType = kIOI2CSimpleTransactionType
-        request.sendBuffer         = withUnsafeMutableBytes(of: &packet) {
-            UInt(bitPattern: $0.baseAddress)
-        }
-        request.sendBytes          = UInt32(packet.count)
-        request.replyTransactionType = kIOI2CNoTransactionType
-        request.replyBytes         = 0
+        withUnsafeMutableBytes(of: &payload) { ptr in
+            var request = IOI2CRequest()
+            bzero(&request, MemoryLayout<IOI2CRequest>.size)
+            request.commFlags             = 0
+            request.sendAddress           = 0x6E
+            request.sendTransactionType   = IOOptionBits(kIOI2CSimpleTransactionType)
+            request.sendBuffer            = UInt(bitPattern: ptr.baseAddress)
+            request.sendBytes             = UInt32(payload.count)
+            request.replyTransactionType  = IOOptionBits(kIOI2CNoTransactionType)
+            request.replyBytes            = 0
+            request.minReplyDelay         = 0
 
-        let interface = getI2CInterface(service: service)
-        defer { releaseI2CInterface(interface) }
+            var busCount: IOItemCount = 0
+            guard IOFBGetI2CInterfaceCount(service, &busCount) == KERN_SUCCESS,
+                  busCount > 0 else { return }
 
-        guard let iface = interface else { return }
-        let kr = IOI2CSendRequest(iface, IOOptionBits(kIOI2CUseSubAddressCommFlag), &request)
-        if kr != KERN_SUCCESS {
-            print("DDC: IOI2CSendRequest failed for display \(displayID), vcp \(vcp): \(kr)")
+            for bus in 0..<busCount {
+                var connect: io_connect_t = 0
+                guard IOFBCopyI2CInterfaceForBus(service, bus, &connect) == KERN_SUCCESS else { continue }
+                _ = IOI2CSendRequest(connect, 0, &request)
+                IOServiceClose(connect)
+            }
         }
     }
 
-    // MARK: - Private helpers
+    // MARK: - Resolve CGDirectDisplayID -> io_service_t (IOFramebuffer)
 
-    private static func IOServicePortFromCGDisplayID(_ displayID: CGDirectDisplayID) -> io_service_t? {
+    private static func serviceForDisplay(_ displayID: CGDirectDisplayID) -> io_service_t? {
+        let vendor  = CGDisplayVendorNumber(displayID)
+        let model   = CGDisplayModelNumber(displayID)
+        let serial  = CGDisplaySerialNumber(displayID)
+
+        let matching = IOServiceMatching("IOFramebuffer")
         var iterator: io_iterator_t = 0
-        let matching = IOServiceMatching("IODisplayConnect")
-        guard IOServiceGetMatchingServices(kIOMainPortDefault, matching, &iterator) == KERN_SUCCESS else {
+
+        let port: mach_port_t
+        if #available(macOS 12.0, *) {
+            port = kIOMainPortDefault
+        } else {
+            port = kIOMasterPortDefault
+        }
+
+        guard IOServiceGetMatchingServices(port, matching, &iterator) == KERN_SUCCESS else {
             return nil
         }
         defer { IOObjectRelease(iterator) }
 
         var service = IOIteratorNext(iterator)
         while service != 0 {
-            // Each IODisplayConnect has a parent framebuffer with a display ID
-            var framebuffer: io_service_t = 0
-            if IORegistryEntryGetParentEntry(service, kIOServicePlane, &framebuffer) == KERN_SUCCESS {
-                defer { IOObjectRelease(framebuffer) }
-                var info: Unmanaged<CFMutableDictionary>?
-                if IODisplayCreateInfoDictionary(framebuffer, IOOptionBits(kIODisplayOnlyPreferredName), &info) == KERN_SUCCESS,
-                   let dict = info?.takeRetainedValue() as? [String: AnyObject],
-                   let vendorID   = dict["DisplayVendorID"]   as? UInt32,
-                   let productID  = dict["DisplayProductID"]  as? UInt32,
-                   let serialNumber = dict["DisplaySerialNumber"] as? UInt32 {
-                    _ = vendorID; _ = productID; _ = serialNumber // used implicitly via matching below
-                }
+            let v = registryUInt32(service, key: "DisplayVendorID")
+            let m = registryUInt32(service, key: "DisplayProductID")
+            let s = registryUInt32(service, key: "DisplaySerialNumber")
 
-                // Match via CGDisplayVendorNumber / CGDisplayModelNumber
-                let vendor  = CGDisplayVendorNumber(displayID)
-                let model   = CGDisplayModelNumber(displayID)
-                var fbVendor: UInt32 = 0
-                var fbModel:  UInt32 = 0
-                if let v = IORegistryEntrySearchCFProperty(framebuffer, kIOServicePlane, "DisplayVendorID" as CFString, nil, IOOptionBits(kIORegistryIterateRecursively | kIORegistryIterateParents)) as? UInt32 { fbVendor = v }
-                if let m = IORegistryEntrySearchCFProperty(framebuffer, kIOServicePlane, "DisplayProductID" as CFString, nil, IOOptionBits(kIORegistryIterateRecursively | kIORegistryIterateParents)) as? UInt32 { fbModel = m }
-
-                if fbVendor == vendor && fbModel == model {
-                    return service   // caller releases via defer
-                }
+            if v == vendor && m == model && (s == serial || s == 0) {
+                return service  // caller must IOObjectRelease
             }
             IOObjectRelease(service)
             service = IOIteratorNext(iterator)
@@ -88,21 +88,15 @@ struct DDC {
         return nil
     }
 
-    // Open the first I2C interface on the given IOService
-    private static func getI2CInterface(service: io_service_t) -> IOI2CInterfaceConnection? {
-        var busCount: IOItemCount = 0
-        guard IOFBGetI2CInterfaceCount(service, &busCount) == KERN_SUCCESS, busCount > 0 else {
-            return nil
-        }
-        var interface: IOI2CInterfaceConnection?
-        _ = IOFBCopyI2CInterfaceForBus(service, 0, &interface)
-        return interface
-    }
-
-    private static func releaseI2CInterface(_ interface: IOI2CInterfaceConnection?) {
-        if let iface = interface {
-            IOI2CInterfaceClose(iface, 0)
-        }
+    private static func registryUInt32(_ service: io_service_t, key: String) -> UInt32 {
+        let value = IORegistryEntrySearchCFProperty(
+            service,
+            kIOServicePlane,
+            key as CFString,
+            kCFAllocatorDefault,
+            IOOptionBits(kIORegistryIterateRecursively)
+        )
+        return (value as? UInt32) ?? 0
     }
 }
 
