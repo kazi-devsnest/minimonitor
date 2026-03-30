@@ -1,0 +1,23 @@
+name: Build DMG
+on: [push]
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Compile App
+        run: |
+          mkdir -p MiniDisplay.app/Contents/MacOS
+          mkdir -p MiniDisplay.app/Contents/Resources
+          cp Info.plist MiniDisplay.app/Contents/Info.plist
+          swiftc App.swift -o MiniDisplay.app/Contents/MacOS/MiniDisplay -sdk $(xcrun --show-sdk-path --sdk macos)
+      - name: Create DMG
+        run: |
+          mkdir dist
+          cp -r MiniDisplay.app dist/
+          hdiutil create -volname "MiniDisplay" -srcfolder dist -ov -format UDZO MiniDisplay.app.dmg
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: MiniDisplay-DMG
+          path: MiniDisplay.app.dmg
