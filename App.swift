@@ -1,13 +1,10 @@
 import SwiftUI
 import AppKit
 
-// Basic DDC Logic (Conceptual)
-// Note: Hardware-level DDC on M1/M2 usually requires private frameworks or I2C drivers.
-// This is a minimal UI template that you can expand.
 struct DDC {
     static func setVCP(displayID: CGDirectDisplayID, vcp: UInt8, value: UInt8) {
-        print("Setting Display \(displayID) VCP \(vcp) to \(value)")
-        // Actual DDC implementation involves I2C calls via IOKit
+        // Placeholder for DDC communication
+        print("Display \(displayID) -> VCP \(vcp) set to \(value)")
     }
 }
 
@@ -19,7 +16,7 @@ struct MonitorView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(name).font(.system(size: 12, weight: .bold))
+            Text(name).font(.system(size: 11, weight: .bold))
             
             HStack {
                 Image(systemName: "sun.max.fill").frame(width: 20)
@@ -49,14 +46,14 @@ struct MainView: View {
                 MonitorView(displayID: id, name: screen.localizedName)
             }
             
-            Button("Quit MiniDisplay") {
+            Button("Quit") {
                 NSApplication.shared.terminate(nil)
             }
             .buttonStyle(.bordered)
             .controlSize(.small)
         }
         .padding()
-        .frame(width: 240)
+        .frame(width: 220)
     }
 }
 
@@ -77,7 +74,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem?.button {
-            button.image = NSImage(systemName: "display")
+            // FIXED LINE BELOW: Using systemSymbolName for AppKit
+            button.image = NSImage(systemSymbolName: "display", accessibilityDescription: "Display Control")
             button.action = #selector(togglePopover)
         }
     }

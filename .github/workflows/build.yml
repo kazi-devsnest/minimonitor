@@ -10,30 +10,28 @@ jobs:
       - name: Select Xcode
         run: sudo xcode-select -s /Applications/Xcode_15.4.app/Contents/Developer
 
-      - name: Compile Universal Binary
+      - name: Compile and Bundle App
         run: |
-          # 1. Create the App Bundle structure
           mkdir -p MiniDisplay.app/Contents/MacOS
-          mkdir -p MiniDisplay.app/Contents/Resources
           cp Info.plist MiniDisplay.app/Contents/Info.plist
           
-          # 2. Get the exact SDK path (using macosx instead of macos to avoid folder conflict)
           SDK_PATH=$(xcrun --sdk macosx --show-sdk-path)
-          echo "SDK Path: $SDK_PATH"
           
-          # 3. Compile for Apple Silicon (M1/M2/M3)
+          # Compile for Apple Silicon
           swiftc -parse-as-library App.swift \
             -o MiniDisplay_arm64 \
             -sdk "$SDK_PATH" \
-            -target arm64-apple-macosx11.0
+            -target arm64-apple-macosx11.0 \
+            -framework SwiftUI -framework AppKit
             
-          # 4. Compile for Intel Macs
+          # Compile for Intel
           swiftc -parse-as-library App.swift \
             -o MiniDisplay_x86 \
             -sdk "$SDK_PATH" \
-            -target x86_64-apple-macosx11.0
+            -target x86_64-apple-macosx11.0 \
+            -framework SwiftUI -framework AppKit
             
-          # 5. Combine into a Universal Binary
+          # Merge into Universal Binary
           lipo -create MiniDisplay_arm64 MiniDisplay_x86 -output MiniDisplay.app/Contents/MacOS/MiniDisplay
           
       - name: Create DMG
@@ -45,5 +43,5 @@ jobs:
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: MiniDisplay-Universal-Installer
+          name: MiniDisplay-Installer
           path: MiniDisplay.app.dmg
